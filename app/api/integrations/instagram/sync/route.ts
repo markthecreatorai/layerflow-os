@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   if (!(await userOwnsAccount(accountId, auth.email))) return forbiddenAccount();
 
   try {
-    await syncInstagramMetrics(accountId, auth.email);
+    await syncInstagramMetrics(accountId);
     return Response.json({ synced: true });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Não foi possível sincronizar as métricas." }, { status: 502 });

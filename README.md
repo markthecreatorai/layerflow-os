@@ -1,38 +1,28 @@
 # Layerflow OS
 
-Sistema operacional editorial para gerenciar marca pessoal, múltiplos perfis de Instagram e uma esteira de conteúdo completa — da ideia aos resultados.
+Sistema operacional editorial para organizar marcas, conteúdo, biblioteca de materiais, métricas do Instagram e automações.
 
-## O que já funciona
+## Stack de produção
 
-- espaços separados por perfil/conta gerenciada;
-- banco de ideias e cascatas de conteúdo;
-- kanban e lista de produção, com avanço de etapas;
-- calendário editorial com agendamento interno;
-- upload e download de lead magnets, roteiros e modelos;
-- dashboard e exportação de resultados em CSV;
-- busca global, captura rápida e importação de rascunhos;
-- fluxos guiados para futuras integrações com Instagram, X e Substack.
-
-## Stack
-
-- Next.js 16 + React 19;
-- Vinext/Vite para execução em Cloudflare Workers;
-- Drizzle ORM + D1 para dados estruturados;
-- R2 para arquivos da biblioteca;
-- Lucide React para ícones.
+- Next.js 16 + React 19 na Vercel;
+- Supabase Auth para login por e-mail e senha;
+- Supabase Postgres com Row Level Security em todas as tabelas;
+- Supabase Storage privado para os arquivos da biblioteca.
 
 ## Desenvolvimento local
 
 ```bash
+cp .env.example .env.local
 npm install
-npm run db:generate
 npm run dev
 ```
 
-## Variáveis e bindings
+O build de produção é validado com `npm run build`.
 
-O projeto espera os bindings `DB` (D1) e `BUCKET` (R2), definidos em `.openai/hosting.json` no ambiente de hospedagem. Credenciais futuras de APIs sociais devem ser adicionadas apenas como variáveis protegidas.
+## Banco e segurança
 
-## Estado das integrações
+As migrações versionadas ficam em `supabase/migrations`. Cada registro pertence a um usuário do Supabase e as políticas RLS bloqueiam acesso entre contas. O bucket `layerflow-library` também é privado e limita cada arquivo a 10 MB.
 
-O gerenciamento editorial e a separação por contas já estão ativos. A publicação automática e a importação de métricas exigem credenciais OAuth e permissões dos aplicativos oficiais da Meta e do X. O Substack permanece como fluxo manual assistido até haver uma API de publicação compatível com a conta.
+## Instagram
+
+As telas e o OAuth estão prontos, mas a conexão ao vivo exige as credenciais do aplicativo oficial da Meta descritas em `.env.example`. Sem essas credenciais, as automações permanecem corretamente em modo de teste.

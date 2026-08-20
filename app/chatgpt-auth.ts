@@ -1,57 +1,40 @@
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { createClient } from "../lib/supabase/server";
 
-export type ChatGPTUser = {
+export type AppUser = {
+  id: string;
   displayName: string;
   email: string;
   fullName: string | null;
 };
 
-const USER_EMAIL_HEADER = "oai-authenticated-user-email";
-const USER_FULL_NAME_HEADER = "oai-authenticated-user-full-name";
-const USER_FULL_NAME_ENCODING_HEADER =
-  "oai-authenticated-user-full-name-encoding";
-const PERCENT_ENCODED_UTF8 = "percent-encoded-utf-8";
-const SIGN_IN_PATH = "/signin-with-chatgpt";
-const SIGN_OUT_PATH = "/signout-with-chatgpt";
-const CALLBACK_PATH = "/callback";
-
-export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get(USER_EMAIL_HEADER);
-  if (!email) return null;
-
-  const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
+export async function getAppUser(): Promise<AppUser | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.getUser();
+  const user = data.user;
+  if (error || !user?.email) return null;
   const fullName =
-    encodedFullName &&
-    requestHeaders.get(USER_FULL_NAME_ENCODING_HEADER) === PERCENT_ENCODED_UTF8
-      ? safeDecodeURIComponent(encodedFullName)
+    typeof user.user_metadata?.full_name === "string"
+      ? user.user_metadata.full_name
       : null;
-
   return {
-    displayName: fullName ?? email,
-    email,
+    id: user.id,
+    email: user.email,
     fullName,
+    displayName: fullName ?? user.email.split("@")[0],
   };
 }
 
-export async function requireChatGPTUser(
-  returnTo: string,
-): Promise<ChatGPTUser> {
-  const user = await getChatGPTUser();
+export async function requireAppUser(returnTo: string): Promise<AppUser> {
+  const user = await getAppUser();
   if (user) return user;
 
-  redirect(chatGPTSignInPath(returnTo));
+  redirect(`/login?returnTo=${encodeURIComponent(safeRelativeReturnPath(returnTo))}`);
 }
 
-export function chatGPTSignInPath(returnTo: string): string {
+export function appSignOutPath(returnTo = "/"): string {
   const safeReturnTo = safeRelativeReturnPath(returnTo);
-  return `${SIGN_IN_PATH}?return_to=${encodeURIComponent(safeReturnTo)}`;
-}
-
-export function chatGPTSignOutPath(returnTo = "/"): string {
-  const safeReturnTo = safeRelativeReturnPath(returnTo);
-  return `${SIGN_OUT_PATH}?return_to=${encodeURIComponent(safeReturnTo)}`;
+  return `/auth/signout?returnTo=${encodeURIComponent(safeReturnTo)}`;
 }
 
 function safeRelativeReturnPath(value: string): string {
@@ -64,23 +47,7 @@ function safeRelativeReturnPath(value: string): string {
     return "/";
   }
   if (url.origin !== "https://app.local") return "/";
-  if (isReservedAuthPath(url.pathname)) return "/";
+  if (url.pathname.startsWith("/auth/") || url.pathname === "/login") return "/";
 
   return `${url.pathname}${url.search}${url.hash}`;
-}
-
-function isReservedAuthPath(pathname: string): boolean {
-  return (
-    pathname === SIGN_IN_PATH ||
-    pathname === SIGN_OUT_PATH ||
-    pathname === CALLBACK_PATH
-  );
-}
-
-function safeDecodeURIComponent(value: string): string | null {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
 }

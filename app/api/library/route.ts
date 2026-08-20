@@ -1,94 +1,61 @@
-import { env } from "cloudflare:workers";
-import { count, desc, eq } from "drizzle-orm";
-import { getDb } from "../../../db";
-import { libraryAssets } from "../../../db/schema";
+import { createClient } from "../../../lib/supabase/server";
+import { camelize } from "../../../lib/supabase/rows";
 import { forbiddenAccount, isAuthResponse, requireApiUser, userOwnsAccount } from "../_auth";
 
-const MAX_FILE_SIZE = 25 * 1024 * 1024;
-const ALLOWED_TYPES = new Set([
-  "application/pdf",
-  "application/zip",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "text/plain",
-  "text/markdown",
-  "image/png",
-  "image/jpeg",
-]);
-
+const BUCKET = "layerflow-library";
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const ALLOWED_TYPES = new Set(["application/pdf", "application/zip", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "text/plain", "text/markdown", "image/png", "image/jpeg"]);
 const starterAssets = [
-  { title: "Mapa da Marca Criativa", category: "Isca digital", format: "PDF", status: "Publicado", description: "Diagnóstico para profissionais criativos encontrarem uma combinação rara de habilidades.", conversions: 184 },
-  { title: "Cascata de Conteúdo", category: "Isca digital", format: "Notion", status: "Ativo", description: "Modelo para transformar uma base densa em vários ângulos de conteúdo.", conversions: 96 },
-  { title: "Reel — Criatividade depois da IA", category: "Roteiro", format: "Vídeo 60s", status: "Aprovado", description: "Gancho, desenvolvimento e fecho para reel de posicionamento.", conversions: 0 },
-  { title: "Carrossel — Portfólio não vende sozinho", category: "Roteiro", format: "8 telas", status: "Rascunho", description: "Estrutura de contraste para autoridade e geração de demanda.", conversions: 0 },
-  { title: "Estrutura de newsletter ensaio", category: "Modelo", format: "Documento", status: "Pronto", description: "Base longa com abertura invertida, tensão e fechamento seco.", conversions: 0 },
+  { title: "Mapa da Marca Criativa", category: "Isca digital", format: "PDF", status: "Modelo", description: "Envie seu próprio arquivo para publicar este material.", conversions: 0 },
+  { title: "Cascata de Conteúdo", category: "Isca digital", format: "Documento", status: "Modelo", description: "Modelo para transformar uma base densa em vários ângulos de conteúdo.", conversions: 0 },
 ];
 
-async function seedIfEmpty(accountId: number) {
-  const db = getDb();
-  const [result] = await db.select({ value: count() }).from(libraryAssets).where(eq(libraryAssets.accountId, accountId));
-  if ((result?.value ?? 0) === 0 && accountId === 1) {
-    await db.insert(libraryAssets).values(starterAssets.map((asset) => ({ ...asset, accountId })));
+async function seedIfEmpty(accountId: number, ownerId: string) {
+  const supabase = await createClient();
+  const result = await supabase.from("library_assets").select("id", { count: "exact", head: true }).eq("account_id", accountId);
+  if (result.error) throw result.error;
+  if (!result.count) {
+    const inserted = await supabase.from("library_assets").insert(starterAssets.map((asset) => ({ ...asset, owner_id: ownerId, account_id: accountId })));
+    if (inserted.error) throw inserted.error;
   }
+}
+
+function withDownload(asset: Record<string, unknown>) {
+  const value = camelize<Record<string, unknown>>(asset);
+  return { ...value, downloadUrl: asset.storage_key ? `/api/library/${asset.id}/file` : asset.url };
 }
 
 export async function GET(request: Request) {
   try {
-    const auth = await requireApiUser();
-    if (isAuthResponse(auth)) return auth;
-    const accountId = Number(new URL(request.url).searchParams.get("accountId")) || 1;
+    const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
+    const accountId = Number(new URL(request.url).searchParams.get("accountId"));
     if (!(await userOwnsAccount(accountId, auth.email))) return forbiddenAccount();
-    await seedIfEmpty(accountId);
-    const db = getDb();
-    const assets = await db.select().from(libraryAssets).where(eq(libraryAssets.accountId, accountId)).orderBy(desc(libraryAssets.createdAt));
-    return Response.json({ assets: assets.map((asset) => ({ ...asset, downloadUrl: asset.storageKey ? `/api/library/${asset.id}/file` : asset.url })) });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Não foi possível carregar a biblioteca." }, { status: 500 });
-  }
+    await seedIfEmpty(accountId, auth.id);
+    const supabase = await createClient();
+    const { data, error } = await supabase.from("library_assets").select("*").eq("account_id", accountId).order("created_at", { ascending: false });
+    if (error) throw error;
+    return Response.json({ assets: (data ?? []).map(withDownload) });
+  } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Não foi possível carregar a biblioteca." }, { status: 500 }); }
 }
 
 export async function POST(request: Request) {
   try {
-    const auth = await requireApiUser();
-    if (isAuthResponse(auth)) return auth;
-    const form = await request.formData();
-    const file = form.get("file");
-    const title = String(form.get("title") ?? "").trim();
-    const description = String(form.get("description") ?? "").trim();
-    const category = String(form.get("category") ?? "Isca digital");
-    const accountId = Number(form.get("accountId")) || 1;
-
+    const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
+    const form = await request.formData(); const file = form.get("file");
+    const title = String(form.get("title") ?? "").trim(); const description = String(form.get("description") ?? "").trim();
+    const category = String(form.get("category") ?? "Isca digital"); const accountId = Number(form.get("accountId"));
     if (!title || !(file instanceof File)) return Response.json({ error: "Título e arquivo são obrigatórios." }, { status: 400 });
     if (!(await userOwnsAccount(accountId, auth.email))) return forbiddenAccount();
-    if (file.size <= 0 || file.size > MAX_FILE_SIZE) return Response.json({ error: "O arquivo deve ter no máximo 25 MB." }, { status: 400 });
+    if (file.size <= 0 || file.size > MAX_FILE_SIZE) return Response.json({ error: "O arquivo deve ter no máximo 10 MB." }, { status: 400 });
     if (!ALLOWED_TYPES.has(file.type)) return Response.json({ error: "Formato não aceito. Use PDF, ZIP, DOCX, PPTX, TXT, MD, PNG ou JPG." }, { status: 400 });
-
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(-120);
-    const storageKey = `accounts/${accountId}/lead-magnets/${crypto.randomUUID()}-${safeName}`;
-    await env.BUCKET.put(storageKey, await file.arrayBuffer(), {
-      httpMetadata: { contentType: file.type },
-      customMetadata: { originalName: file.name, accountId: String(accountId), ownerEmail: auth.email },
-    });
-
+    const storageKey = `${auth.id}/accounts/${accountId}/lead-magnets/${crypto.randomUUID()}-${safeName}`;
+    const supabase = await createClient();
+    const uploaded = await supabase.storage.from(BUCKET).upload(storageKey, file, { contentType: file.type, upsert: false });
+    if (uploaded.error) throw uploaded.error;
     const extension = file.name.split(".").pop()?.toUpperCase() || "Arquivo";
-    const db = getDb();
-    const [asset] = await db.insert(libraryAssets).values({
-      accountId,
-      title,
-      category,
-      format: extension,
-      status: "Publicado",
-      description,
-      storageKey,
-      fileName: file.name,
-      mimeType: file.type,
-      fileSize: file.size,
-      conversions: 0,
-    }).returning();
-
-    return Response.json({ asset: { ...asset, downloadUrl: `/api/library/${asset.id}/file` } }, { status: 201 });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Não foi possível enviar o arquivo." }, { status: 500 });
-  }
+    const created = await supabase.from("library_assets").insert({ owner_id: auth.id, account_id: accountId, title, category, format: extension, status: "Publicado", description, storage_key: storageKey, file_name: file.name, mime_type: file.type, file_size: file.size, conversions: 0 }).select("*").single();
+    if (created.error) { await supabase.storage.from(BUCKET).remove([storageKey]); throw created.error; }
+    return Response.json({ asset: withDownload(created.data) }, { status: 201 });
+  } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Não foi possível enviar o arquivo." }, { status: 500 }); }
 }

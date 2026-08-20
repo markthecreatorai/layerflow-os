@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://layerflow-os.lucascarrijo-contato.chatgpt.site"),
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_APP_URL ||
+      "https://layerflow-os-lucaslcarrijos-projects.vercel.app",
+  ),
   title: "Layerflow OS",
   description: "O sistema operacional da sua marca pessoal.",
   openGraph: {
