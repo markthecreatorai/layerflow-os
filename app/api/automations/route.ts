@@ -1,167 +1,76 @@
-import { and, desc, eq } from "drizzle-orm";
-import { getDb } from "../../../db";
-import { automationEvents, automationFunnels, instagramConnections, instagramMedia, libraryAssets } from "../../../db/schema";
+import { createClient } from "../../../lib/supabase/server";
+import { camelize } from "../../../lib/supabase/rows";
 import { forbiddenAccount, isAuthResponse, requireApiUser, userOwnsAccount } from "../_auth";
 import { getAutomationReadiness } from "./_server";
 
-type AutomationInput = {
-  id?: number;
-  action?: "duplicate";
-  accountId?: number;
-  name?: string;
-  templateType?: string;
-  status?: string;
-  triggerType?: string;
-  mediaId?: string | null;
-  mediaLabel?: string | null;
-  matchType?: string;
-  keywords?: string[];
-  publicReplyEnabled?: boolean;
-  replyMode?: string;
-  replyScripts?: string[];
-  dmMessage?: string;
-  dmButtonLabel?: string;
-  dmLink?: string | null;
-  assetId?: number | null;
-  cooldownHours?: number;
-  ignoreOwnComments?: boolean;
-  blockedWords?: string[];
-  blockedUsers?: string[];
-};
+type Input = Record<string, unknown> & { id?: number; action?: string; accountId?: number };
+type JoinedEvent = Record<string, unknown> & { automation_funnels?: { name?: string } | null };
+const cleanList = (values: unknown) => [...new Set((Array.isArray(values) ? values : []).map(String).map((v) => v.trim()).filter(Boolean))].slice(0, 30);
+const listJson = (value: unknown) => JSON.stringify(cleanList(value));
 
-function cleanList(values?: string[]) {
-  return [...new Set((values ?? []).map((value) => String(value).trim()).filter(Boolean))].slice(0, 30);
-}
-
-async function accountConnection(accountId: number, ownerEmail: string) {
-  const [connection] = await getDb().select().from(instagramConnections).where(and(eq(instagramConnections.accountId, accountId), eq(instagramConnections.ownerEmail, ownerEmail))).limit(1);
-  return connection ?? null;
+async function connectionFor(accountId: number) {
+  const supabase = await createClient();
+  const { data, error } = await supabase.from("instagram_connections").select("*").eq("account_id", accountId).maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
 export async function GET(request: Request) {
-  const auth = await requireApiUser();
-  if (isAuthResponse(auth)) return auth;
+  const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
   const accountId = Number(new URL(request.url).searchParams.get("accountId"));
   if (!(await userOwnsAccount(accountId, auth.email))) return forbiddenAccount();
-
-  const db = getDb();
-  const connection = await accountConnection(accountId, auth.email);
-  const [funnels, events, assets, media] = await Promise.all([
-    db.select().from(automationFunnels).where(and(eq(automationFunnels.accountId, accountId), eq(automationFunnels.ownerEmail, auth.email))).orderBy(desc(automationFunnels.updatedAt)),
-    db.select().from(automationEvents).innerJoin(automationFunnels, eq(automationEvents.automationId, automationFunnels.id)).where(and(eq(automationFunnels.accountId, accountId), eq(automationFunnels.ownerEmail, auth.email))).orderBy(desc(automationEvents.createdAt)).limit(30),
-    db.select({ id: libraryAssets.id, title: libraryAssets.title, format: libraryAssets.format, status: libraryAssets.status }).from(libraryAssets).where(and(eq(libraryAssets.accountId, accountId), eq(libraryAssets.category, "Isca digital"))).orderBy(desc(libraryAssets.createdAt)),
-    connection ? db.select({ id: instagramMedia.instagramMediaId, caption: instagramMedia.caption, mediaType: instagramMedia.mediaType, permalink: instagramMedia.permalink, publishedAt: instagramMedia.publishedAt }).from(instagramMedia).where(eq(instagramMedia.connectionId, connection.id)).orderBy(desc(instagramMedia.publishedAt)).limit(30) : Promise.resolve([]),
+  const supabase = await createClient(); const connection = await connectionFor(accountId);
+  const [funnels, assets, media] = await Promise.all([
+    supabase.from("automation_funnels").select("*").eq("account_id", accountId).order("updated_at", { ascending: false }),
+    supabase.from("library_assets").select("id,title,format,status").eq("account_id", accountId).eq("category", "Isca digital").order("created_at", { ascending: false }),
+    connection ? supabase.from("instagram_media").select("instagram_media_id,caption,media_type,permalink,published_at").eq("connection_id", connection.id).order("published_at", { ascending: false }).limit(30) : Promise.resolve({ data: [], error: null }),
   ]);
+  if (funnels.error) throw funnels.error; if (assets.error) throw assets.error; if (media.error) throw media.error;
+  const ids = (funnels.data ?? []).map((item) => item.id);
+  const events = ids.length ? await supabase.from("automation_events").select("*,automation_funnels(name)").in("automation_id", ids).order("created_at", { ascending: false }).limit(30) : { data: [], error: null };
+  if (events.error) throw events.error;
+  return Response.json({ automations: camelize(funnels.data), events: camelize((events.data ?? []).map((raw) => { const event = raw as JoinedEvent; return { ...event, automation_name: event.automation_funnels?.name, automation_funnels: undefined }; })), assets: camelize(assets.data), media: camelize((media.data ?? []).map((item: Record<string, unknown>) => ({ ...item, id: item.instagram_media_id }))), instagram: connection ? { username: connection.username, status: connection.status } : null, readiness: getAutomationReadiness(Boolean(connection)) });
+}
 
-  return Response.json({
-    automations: funnels,
-    events: events.map((row) => ({ ...row.automation_events, automationName: row.automation_funnels.name })),
-    assets,
-    media,
-    instagram: connection ? { username: connection.username, status: connection.status } : null,
-    readiness: getAutomationReadiness(Boolean(connection)),
-  });
+function values(payload: Input, auth: { id: string; email: string }, accountId: number, status: string) {
+  return { owner_id: auth.id, owner_email: auth.email, account_id: accountId, name: String(payload.name ?? "").trim(), template_type: String(payload.templateType ?? "lead_magnet"), status, trigger_type: payload.triggerType === "any_comment" ? "any_comment" : "keywords", media_id: payload.mediaId || null, media_label: payload.mediaLabel || null, match_type: payload.matchType === "exact" ? "exact" : "contains", keywords: listJson(payload.keywords), public_reply_enabled: payload.publicReplyEnabled !== false, reply_mode: payload.replyMode === "sequential" ? "sequential" : "random", reply_scripts: listJson(payload.replyScripts), dm_message: String(payload.dmMessage ?? "").trim(), dm_button_label: String(payload.dmButtonLabel ?? "Acessar material").trim().slice(0, 40), dm_link: payload.dmLink ? String(payload.dmLink).trim() : null, asset_id: payload.assetId ? Number(payload.assetId) : null, cooldown_hours: Math.max(0, Math.min(720, Number(payload.cooldownHours ?? 24))), ignore_own_comments: payload.ignoreOwnComments !== false, blocked_words: listJson(payload.blockedWords), blocked_users: listJson(payload.blockedUsers), updated_at: new Date().toISOString() };
 }
 
 export async function POST(request: Request) {
-  const auth = await requireApiUser();
-  if (isAuthResponse(auth)) return auth;
-  const payload = await request.json().catch(() => ({})) as AutomationInput;
-  const accountId = Number(payload.accountId);
+  const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
+  const payload = await request.json().catch(() => ({})) as Input; const accountId = Number(payload.accountId);
   if (!(await userOwnsAccount(accountId, auth.email))) return forbiddenAccount();
-
-  const name = String(payload.name ?? "").trim();
-  const keywords = cleanList(payload.keywords);
-  const replyScripts = cleanList(payload.replyScripts);
-  const dmMessage = String(payload.dmMessage ?? "").trim();
-  if (!name || !dmMessage) return Response.json({ error: "Dê um nome à automação e escreva a mensagem privada." }, { status: 400 });
-  if (payload.triggerType !== "any_comment" && keywords.length === 0) return Response.json({ error: "Adicione pelo menos uma palavra-chave." }, { status: 400 });
-  if (payload.publicReplyEnabled !== false && replyScripts.length === 0) return Response.json({ error: "Adicione pelo menos uma resposta pública." }, { status: 400 });
-
-  const connection = await accountConnection(accountId, auth.email);
-  const readiness = getAutomationReadiness(Boolean(connection));
-  const requestedStatus = payload.status === "Ativa" ? "Ativa" : "Rascunho";
-  const status = requestedStatus === "Ativa" && !readiness.liveReady ? "Teste" : requestedStatus;
-  const now = new Date().toISOString();
-  const [automation] = await getDb().insert(automationFunnels).values({
-    ownerEmail: auth.email,
-    accountId,
-    name,
-    templateType: String(payload.templateType ?? "lead_magnet"),
-    status,
-    triggerType: payload.triggerType === "any_comment" ? "any_comment" : "keywords",
-    mediaId: payload.mediaId || null,
-    mediaLabel: payload.mediaLabel || null,
-    matchType: payload.matchType === "exact" ? "exact" : "contains",
-    keywords: JSON.stringify(keywords),
-    publicReplyEnabled: payload.publicReplyEnabled !== false,
-    replyMode: payload.replyMode === "sequential" ? "sequential" : "random",
-    replyScripts: JSON.stringify(replyScripts),
-    dmMessage,
-    dmButtonLabel: String(payload.dmButtonLabel ?? "Acessar material").trim().slice(0, 40),
-    dmLink: payload.dmLink ? String(payload.dmLink).trim() : null,
-    assetId: payload.assetId ? Number(payload.assetId) : null,
-    cooldownHours: Math.max(0, Math.min(720, Number(payload.cooldownHours ?? 24))),
-    ignoreOwnComments: payload.ignoreOwnComments !== false,
-    blockedWords: JSON.stringify(cleanList(payload.blockedWords)),
-    blockedUsers: JSON.stringify(cleanList(payload.blockedUsers)),
-    updatedAt: now,
-  }).returning();
-  return Response.json({ automation, mode: readiness.mode }, { status: 201 });
+  if (!String(payload.name ?? "").trim() || !String(payload.dmMessage ?? "").trim()) return Response.json({ error: "Dê um nome à automação e escreva a mensagem privada." }, { status: 400 });
+  const readiness = getAutomationReadiness(Boolean(await connectionFor(accountId)));
+  const status = payload.status === "Ativa" && readiness.liveReady ? "Ativa" : payload.status === "Ativa" ? "Teste" : "Rascunho";
+  const supabase = await createClient(); const result = await supabase.from("automation_funnels").insert(values(payload, auth, accountId, status)).select("*").single();
+  if (result.error) throw result.error;
+  return Response.json({ automation: camelize(result.data), mode: readiness.mode }, { status: 201 });
 }
 
 export async function PATCH(request: Request) {
-  const auth = await requireApiUser();
-  if (isAuthResponse(auth)) return auth;
-  const payload = await request.json().catch(() => ({})) as AutomationInput;
-  const id = Number(payload.id);
-  const db = getDb();
-  const [current] = await db.select().from(automationFunnels).where(and(eq(automationFunnels.id, id), eq(automationFunnels.ownerEmail, auth.email))).limit(1);
-  if (!current || !(await userOwnsAccount(current.accountId, auth.email))) return forbiddenAccount();
-
+  const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
+  const payload = await request.json().catch(() => ({})) as Input; const supabase = await createClient();
+  const current = await supabase.from("automation_funnels").select("*").eq("id", Number(payload.id)).maybeSingle();
+  if (current.error) throw current.error; if (!current.data) return forbiddenAccount();
+  if (!(await userOwnsAccount(current.data.account_id, auth.email))) return forbiddenAccount();
   if (payload.action === "duplicate") {
-    const [automation] = await db.insert(automationFunnels).values({ ...current, id: undefined, createdAt: undefined, name: `${current.name} — cópia`, status: "Rascunho", updatedAt: new Date().toISOString() }).returning();
-    return Response.json({ automation });
+    const copy = { ...current.data };
+    delete copy.id;
+    delete copy.created_at;
+    const duplicated = await supabase.from("automation_funnels").insert({ ...copy, name: `${copy.name} — cópia`, status: "Rascunho", updated_at: new Date().toISOString() }).select("*").single();
+    if (duplicated.error) throw duplicated.error; return Response.json({ automation: camelize(duplicated.data) });
   }
-
-  const connection = await accountConnection(current.accountId, auth.email);
-  const readiness = getAutomationReadiness(Boolean(connection));
-  const requestedStatus = payload.status;
-  const status = requestedStatus === "Ativa" && !readiness.liveReady ? "Teste" : requestedStatus;
-  const [automation] = await db.update(automationFunnels).set({
-    ...(status ? { status } : {}),
-    ...(payload.name ? { name: payload.name.trim() } : {}),
-    ...(payload.templateType ? { templateType: payload.templateType } : {}),
-    ...(payload.triggerType ? { triggerType: payload.triggerType === "any_comment" ? "any_comment" : "keywords" } : {}),
-    ...(payload.mediaId !== undefined ? { mediaId: payload.mediaId || null } : {}),
-    ...(payload.mediaLabel !== undefined ? { mediaLabel: payload.mediaLabel || null } : {}),
-    ...(payload.matchType ? { matchType: payload.matchType === "exact" ? "exact" : "contains" } : {}),
-    ...(payload.keywords ? { keywords: JSON.stringify(cleanList(payload.keywords)) } : {}),
-    ...(typeof payload.publicReplyEnabled === "boolean" ? { publicReplyEnabled: payload.publicReplyEnabled } : {}),
-    ...(payload.replyMode ? { replyMode: payload.replyMode === "sequential" ? "sequential" : "random" } : {}),
-    ...(payload.replyScripts ? { replyScripts: JSON.stringify(cleanList(payload.replyScripts)) } : {}),
-    ...(payload.dmMessage !== undefined ? { dmMessage: payload.dmMessage.trim() } : {}),
-    ...(payload.dmButtonLabel !== undefined ? { dmButtonLabel: payload.dmButtonLabel.trim().slice(0, 40) } : {}),
-    ...(payload.dmLink !== undefined ? { dmLink: payload.dmLink || null } : {}),
-    ...(payload.assetId !== undefined ? { assetId: payload.assetId ? Number(payload.assetId) : null } : {}),
-    ...(payload.cooldownHours !== undefined ? { cooldownHours: Math.max(0, Math.min(720, Number(payload.cooldownHours))) } : {}),
-    ...(typeof payload.ignoreOwnComments === "boolean" ? { ignoreOwnComments: payload.ignoreOwnComments } : {}),
-    ...(payload.blockedWords ? { blockedWords: JSON.stringify(cleanList(payload.blockedWords)) } : {}),
-    ...(payload.blockedUsers ? { blockedUsers: JSON.stringify(cleanList(payload.blockedUsers)) } : {}),
-    updatedAt: new Date().toISOString(),
-  }).where(and(eq(automationFunnels.id, id), eq(automationFunnels.ownerEmail, auth.email))).returning();
-  return Response.json({ automation, mode: readiness.mode });
+  const readiness = getAutomationReadiness(Boolean(await connectionFor(current.data.account_id)));
+  const next = values({ ...camelize(current.data), ...payload }, auth, current.data.account_id, payload.status === "Ativa" && !readiness.liveReady ? "Teste" : String(payload.status ?? current.data.status));
+  const updated = await supabase.from("automation_funnels").update(next).eq("id", current.data.id).select("*").single();
+  if (updated.error) throw updated.error; return Response.json({ automation: camelize(updated.data), mode: readiness.mode });
 }
 
 export async function DELETE(request: Request) {
-  const auth = await requireApiUser();
-  if (isAuthResponse(auth)) return auth;
-  const payload = await request.json().catch(() => ({})) as AutomationInput;
-  const id = Number(payload.id);
-  const db = getDb();
-  const [current] = await db.select().from(automationFunnels).where(and(eq(automationFunnels.id, id), eq(automationFunnels.ownerEmail, auth.email))).limit(1);
-  if (!current || !(await userOwnsAccount(current.accountId, auth.email))) return forbiddenAccount();
-  await db.delete(automationEvents).where(eq(automationEvents.automationId, id));
-  await db.delete(automationFunnels).where(and(eq(automationFunnels.id, id), eq(automationFunnels.ownerEmail, auth.email)));
+  const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
+  const payload = await request.json().catch(() => ({})) as Input; const supabase = await createClient();
+  const result = await supabase.from("automation_funnels").delete().eq("id", Number(payload.id)).select("id").maybeSingle();
+  if (result.error) throw result.error; if (!result.data) return forbiddenAccount();
   return Response.json({ deleted: true });
 }

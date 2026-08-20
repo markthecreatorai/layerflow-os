@@ -1,29 +1,17 @@
-import { env } from "cloudflare:workers";
-import { eq } from "drizzle-orm";
-import { getDb } from "../../../../../db";
-import { libraryAssets } from "../../../../../db/schema";
+import { createClient } from "../../../../../lib/supabase/server";
 import { forbiddenAccount, isAuthResponse, requireApiUser, userOwnsAccount } from "../../../_auth";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const auth = await requireApiUser();
-    if (isAuthResponse(auth)) return auth;
-    const { id } = await params;
-    const db = getDb();
-    const [asset] = await db.select().from(libraryAssets).where(eq(libraryAssets.id, Number(id))).limit(1);
-    if (!asset?.storageKey) return new Response("Arquivo não encontrado.", { status: 404 });
-    if (!(await userOwnsAccount(asset.accountId, auth.email))) return forbiddenAccount();
-
-    const object = await env.BUCKET.get(asset.storageKey);
-    if (!object) return new Response("Arquivo não encontrado.", { status: 404 });
-
-    const headers = new Headers();
-    object.writeHttpMetadata(headers);
-    headers.set("etag", object.httpEtag);
-    headers.set("content-disposition", `attachment; filename*=UTF-8''${encodeURIComponent(asset.fileName || "lead-magnet")}`);
-    headers.set("cache-control", "private, max-age=300");
-    return new Response(object.body, { headers });
-  } catch {
-    return new Response("Não foi possível baixar o arquivo.", { status: 500 });
-  }
+    const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
+    const { id } = await params; const supabase = await createClient();
+    const result = await supabase.from("library_assets").select("account_id,storage_key,file_name,mime_type").eq("id", Number(id)).maybeSingle();
+    if (result.error) throw result.error;
+    const asset = result.data;
+    if (!asset?.storage_key) return new Response("Arquivo não encontrado.", { status: 404 });
+    if (!(await userOwnsAccount(asset.account_id, auth.email))) return forbiddenAccount();
+    const downloaded = await supabase.storage.from("layerflow-library").download(asset.storage_key);
+    if (downloaded.error) throw downloaded.error;
+    return new Response(downloaded.data, { headers: { "content-type": asset.mime_type || "application/octet-stream", "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(asset.file_name || "lead-magnet")}`, "cache-control": "private, max-age=300" } });
+  } catch { return new Response("Não foi possível baixar o arquivo.", { status: 500 }); }
 }
