@@ -1,8 +1,10 @@
 "use server";
 
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "../../lib/supabase/server";
+
+const appUrl =
+  process.env.NEXT_PUBLIC_APP_URL || "https://os.layerflow.com.br";
 
 function readCredentials(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
@@ -29,17 +31,13 @@ export async function login(formData: FormData) {
 
 export async function signup(formData: FormData) {
   const { email, password, fullName } = readCredentials(formData);
-  const requestHeaders = await headers();
-  const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host");
-  const protocol = requestHeaders.get("x-forwarded-proto") ?? "https";
-  const origin = host ? `${protocol}://${host}` : process.env.NEXT_PUBLIC_APP_URL;
   const supabase = await createClient();
   const { error } = await supabase.auth.signUp({
     email,
     password,
     options: {
       data: { full_name: fullName || email.split("@")[0] },
-      emailRedirectTo: `${origin}/auth/confirm`,
+      emailRedirectTo: new URL("/auth/confirm", appUrl).toString(),
     },
   });
   if (error) redirect(`/login?message=${encodeURIComponent(error.message)}`);
