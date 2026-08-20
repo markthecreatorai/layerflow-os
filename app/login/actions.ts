@@ -3,8 +3,8 @@
 import { redirect } from "next/navigation";
 import { createClient } from "../../lib/supabase/server";
 
-const appUrl =
-  process.env.NEXT_PUBLIC_APP_URL || "https://os.layerflow.com.br";
+// O e-mail de confirmação é sempre emitido para o domínio canônico do MVP.
+const appUrl = "https://os.layerflow.com.br";
 
 function readCredentials(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
