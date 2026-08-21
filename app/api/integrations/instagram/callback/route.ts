@@ -2,7 +2,7 @@ import { createClient } from "../../../../../lib/supabase/server";
 import { isAuthResponse, requireApiUser } from "../../../_auth";
 import { encryptInstagramToken, exchangeInstagramAuthorizationCode, subscribeInstagramWebhooks } from "../_server";
 
-const back = (request: Request, status: string, reason?: string) => { const url = new URL("/", request.url); url.searchParams.set("integration", "instagram"); url.searchParams.set("status", status); if (reason) url.searchParams.set("reason", reason); return Response.redirect(url, 303); };
+const back = (request: Request, status: string, reason?: string) => { const url = new URL("/integrations/instagram/complete", request.url); url.searchParams.set("status", status); if (reason) url.searchParams.set("reason", reason); return Response.redirect(url, 303); };
 export async function GET(request: Request) {
   const auth = await requireApiUser(); if (isAuthResponse(auth)) return auth;
   const url = new URL(request.url); const code = url.searchParams.get("code"); const state = url.searchParams.get("state");
