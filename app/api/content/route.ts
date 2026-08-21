@@ -31,7 +31,11 @@ export async function GET(request: Request) {
     const { data, error } = await supabase.from("content_items").select("*").eq("account_id", accountId).order("created_at", { ascending: false }).order("id", { ascending: false });
     if (error) throw error;
     return Response.json({ items: camelize(data) });
-  } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Não foi possível carregar os conteúdos." }, { status: 500 }); }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Não foi possível carregar os conteúdos.";
+    console.error(JSON.stringify({ level: "error", route: "/api/content", method: "GET", message }));
+    return Response.json({ error: message }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request) {
