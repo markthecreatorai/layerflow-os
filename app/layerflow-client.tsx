@@ -254,6 +254,7 @@ export default function LayerflowClient({ viewer, signOutPath, initialActive }: 
   const [accounts, setAccounts] = useState<BrandAccount[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<number>(0);
   const [items, setItems] = useState<ContentItem[]>([]);
+  const [contentLoadError, setContentLoadError] = useState("");
   const activeAccount = accounts.find((account) => account.id === activeAccountId) ?? accounts[0];
 
   useEffect(() => {
@@ -268,7 +269,12 @@ export default function LayerflowClient({ viewer, signOutPath, initialActive }: 
 
   useEffect(() => {
     if (!activeAccountId) return;
-    fetch(`/api/content?accountId=${activeAccountId}`).then((response) => response.json()).then((data) => setItems(data.items ?? [])).catch(() => undefined);
+    fetch(`/api/content?accountId=${activeAccountId}`).then(async (response) => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Não foi possível carregar os conteúdos.");
+      setItems(data.items ?? []);
+      setContentLoadError("");
+    }).catch((error) => setContentLoadError(error instanceof Error ? error.message : "Não foi possível carregar os conteúdos."));
   }, [activeAccountId]);
 
   useEffect(() => {
@@ -298,7 +304,7 @@ export default function LayerflowClient({ viewer, signOutPath, initialActive }: 
   return (
     <main className="app-shell">
       <Sidebar active={active} onSelect={setActive} open={menuOpen} onClose={() => setMenuOpen(false)} accounts={accounts} activeAccount={activeAccount} onAccountChange={changeAccount} onAddAccount={() => setAddAccountOpen(true)} contentCount={items.length} />
-      <div className="app-main"><Header onMenu={() => setMenuOpen(true)} onNew={() => setNewContentOpen(true)} onSearch={() => setSearchOpen(true)} onNotifications={() => setNotificationsOpen((value) => !value)} notificationsOpen={notificationsOpen} viewer={viewer} signOutPath={signOutPath} />{active === "Visão geral" ? <Overview items={items} account={activeAccount} onCapture={createCascade} onNavigate={setActive} /> : <ModuleView active={active} items={items} activeAccountId={activeAccountId} onCreate={createContent} onMove={moveContent} onSchedule={scheduleContent} onOpenNew={() => setNewContentOpen(true)} onNavigate={setActive} />}</div>
+      <div className="app-main"><Header onMenu={() => setMenuOpen(true)} onNew={() => setNewContentOpen(true)} onSearch={() => setSearchOpen(true)} onNotifications={() => setNotificationsOpen((value) => !value)} notificationsOpen={notificationsOpen} viewer={viewer} signOutPath={signOutPath} />{contentLoadError ? <div className="app-data-warning" role="alert"><strong>Não foi possível carregar seus conteúdos.</strong><span>{contentLoadError}</span><button type="button" onClick={() => window.location.reload()}>Tentar novamente</button></div> : null}{active === "Visão geral" ? <Overview items={items} account={activeAccount} onCapture={createCascade} onNavigate={setActive} /> : <ModuleView active={active} items={items} activeAccountId={activeAccountId} onCreate={createContent} onMove={moveContent} onSchedule={scheduleContent} onOpenNew={() => setNewContentOpen(true)} onNavigate={setActive} />}</div>
       <NewContentModal open={newContentOpen} onClose={() => setNewContentOpen(false)} onCreate={createContent} />
       <AddAccountModal open={addAccountOpen} onClose={() => setAddAccountOpen(false)} onAdd={addAccount} />
       <SearchModal key={searchOpen ? "search-open" : "search-closed"} open={searchOpen} items={items} onClose={() => setSearchOpen(false)} onNavigate={setActive} />
