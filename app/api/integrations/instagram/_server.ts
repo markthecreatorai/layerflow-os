@@ -1,7 +1,7 @@
 import { createClient } from "../../../../lib/supabase/server";
 import { camelize } from "../../../../lib/supabase/rows";
 
-const DEFAULT_REDIRECT_URI = "https://layerflow-os-lucaslcarrijos-projects.vercel.app/api/integrations/instagram/callback";
+const DEFAULT_REDIRECT_URI = "https://os.layerflow.com.br/api/integrations/instagram/callback";
 const DEFAULT_GRAPH_VERSION = "v26.0";
 export const INSTAGRAM_SCOPES = ["instagram_business_basic", "instagram_business_manage_insights", "instagram_business_manage_comments", "instagram_business_manage_messages"];
 
