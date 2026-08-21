@@ -205,6 +205,9 @@ button { color: inherit; }
 }
 
 .app-main { min-height: 100vh; margin-left: 248px; }
+.app-data-warning { display: flex; align-items: center; gap: 10px; width: min(1180px,calc(100% - 44px)); padding: 10px 12px; margin: 14px auto -4px; color: #6d3c2e; background: #fff2ec; border: 1px solid #f0cabb; border-radius: 11px; font-size: 10px; }
+.app-data-warning span { min-width: 0; flex: 1; color: #916657; overflow-wrap: anywhere; }
+.app-data-warning button { padding: 7px 9px; color: inherit; background: #fff; border: 1px solid #e3b9a9; border-radius: 8px; font-size: 9px; font-weight: 800; cursor: pointer; }
 
 .topbar {
   position: sticky;
