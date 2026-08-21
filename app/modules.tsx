@@ -566,6 +566,23 @@ function IntegrationsModule({ activeAccountId }: ModuleProps) {
   }, [activeAccountId]);
 
   useEffect(() => {
+    const refreshAfterOAuth = async (event?: MessageEvent) => {
+      if (event && (event.origin !== window.location.origin || event.data?.type !== "layerflow:instagram-oauth")) return;
+      if (!activeAccountId) return;
+      try {
+        const next = await loadInstagramStatus(activeAccountId);
+        setInstagram(next);
+        if (!next.connection && event) setError("O Instagram não concluiu a autorização. Tente novamente.");
+      } catch { setError("Não foi possível atualizar a conexão do Instagram."); }
+    };
+    const onMessage = (event: MessageEvent) => { void refreshAfterOAuth(event); };
+    const onFocus = () => { void refreshAfterOAuth(); };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("focus", onFocus);
+    return () => { window.removeEventListener("message", onMessage); window.removeEventListener("focus", onFocus); };
+  }, [activeAccountId]);
+
+  useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("integration") !== "instagram") return;
     if (params.get("status") === "error") queueMicrotask(() => setError("O Instagram não concluiu a autorização. Confira o aplicativo Meta e tente novamente."));
@@ -590,7 +607,9 @@ function IntegrationsModule({ activeAccountId }: ModuleProps) {
 
   function connectInstagram() {
     if (!instagram?.configured) { setSetupOpen(true); return; }
-    window.location.assign(`/api/integrations/instagram/connect?accountId=${activeAccountId}`);
+    const popup = window.open(`/api/integrations/instagram/connect?accountId=${activeAccountId}`, "layerflow-instagram-oauth", "popup=yes,width=620,height=780");
+    if (!popup) setError("Seu navegador bloqueou a janela. Permita pop-ups para conectar o Instagram.");
+    else popup.focus();
   }
 
   async function syncInstagram() {
@@ -617,13 +636,13 @@ function IntegrationsModule({ activeAccountId }: ModuleProps) {
   return (
     <div className="page-shell module-page">
       <PageHeader kicker="Conexões" title="Integrações" description="Automatize apenas o que cada canal permite e mantenha o restante organizado com datas e próximos passos." />
-      <section className="integration-notice"><Zap size={18} /><div><strong>O calendário funciona antes das conexões</strong><span>Você já pode organizar datas e responsáveis. As credenciais serão adicionadas em uma etapa separada e segura.</span></div></section>
+      <section className="integration-notice"><Zap size={18} /><div><strong>Conecte sem compartilhar sua senha</strong><span>O Instagram abre em uma janela segura, você autoriza e volta para o Layerflow automaticamente.</span></div></section>
       <section className="connector-grid">
         {connectorData.map((item) => { const Icon = item.icon; const itemState = item.id === "instagram" ? instagramState : item.state; return <button type="button" className={`connector-card ${selected === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item.id)}><div className={`connector-icon ${item.color}`}><Icon size={22} /></div><div className="connector-card-head"><strong>{item.name}</strong><span><StatusDot color={item.id === "substack" || (item.id === "instagram" && !instagram?.connection) ? "#ffd685" : "#b8ff6a"} />{itemState}</span></div><p>{item.description}</p><div className="capability-list">{item.capabilities.map((cap) => <span key={cap}><Check size={13} /> {cap}</span>)}</div><small>{item.id === "instagram" && instagram?.connection?.lastSyncedAt ? `Sincronizado em ${new Date(instagram.connection.lastSyncedAt).toLocaleString("pt-BR")}` : item.note}</small></button>; })}
       </section>
-      <section className="connection-setup">
+      <section className={`connection-setup ${connector.id === "instagram" ? "instagram-onboarding" : ""}`}>
         <div className={`connector-icon large ${connector.color}`}><ConnectorIcon size={26} /></div>
-        <div className="connection-copy"><span className="section-kicker">Configuração</span><h2>{connector.id === "instagram" && instagram?.connection ? `@${instagram.connection.username}` : connector.name}</h2><p>{connector.id === "instagram" ? instagram?.connection ? `Conta ${instagram.connection.accountType.toLowerCase()} conectada. Importe as métricas mais recentes e acompanhe o desempenho em Resultados.` : instagram?.connectionMode === "access_token" ? "A credencial recebida está protegida e pronta para vincular esta conta ao perfil ativo. Depois da confirmação, a primeira sincronização começa automaticamente." : "Autorize uma conta profissional diretamente pelo Instagram. O Layerflow receberá apenas as permissões de perfil, posts e métricas." : connector.id === "x" ? "Conecte um projeto do portal do X com permissão de leitura e escrita. O agendador publica no horário definido pelo calendário." : "O sistema prepara o texto, registra a data e mantém o conteúdo em uma fila manual. A automação só será ativada depois de confirmar que seu acesso oficial de desenvolvedor inclui os recursos de publicação necessários."}</p>{connector.id === "instagram" && instagram?.connection && <div className="connected-account-stats"><span><strong>{instagram.connection.followersCount.toLocaleString("pt-BR")}</strong> seguidores</span><span><strong>{instagram.connection.mediaCount.toLocaleString("pt-BR")}</strong> posts</span><span><strong>{instagram.connection.reach30d.toLocaleString("pt-BR")}</strong> alcance 30d</span></div>}</div>
+        <div className="connection-copy"><span className="section-kicker">{connector.id === "instagram" ? "Conexão rápida" : "Configuração"}</span><h2>{connector.id === "instagram" && instagram?.connection ? `@${instagram.connection.username}` : connector.name}</h2><p>{connector.id === "instagram" ? instagram?.connection ? `Conta ${instagram.connection.accountType.toLowerCase()} conectada. Importe as métricas mais recentes e acompanhe o desempenho em Resultados.` : instagram?.connectionMode === "access_token" ? "A credencial recebida está protegida e pronta para vincular esta conta ao perfil ativo. Depois da confirmação, a primeira sincronização começa automaticamente." : "Clique em conectar, entre no Instagram na janela que abrir e autorize o Layerflow. Você não precisa copiar tokens nem informar sua senha aqui." : connector.id === "x" ? "Conecte um projeto do portal do X com permissão de leitura e escrita. O agendador publica no horário definido pelo calendário." : "O sistema prepara o texto, registra a data e mantém o conteúdo em uma fila manual. A automação só será ativada depois de confirmar que seu acesso oficial de desenvolvedor inclui os recursos de publicação necessários."}</p>{connector.id === "instagram" && !instagram?.connection && <div className="oauth-steps"><span><b>1</b> Abrir Instagram</span><span><b>2</b> Autorizar acesso</span><span><b>3</b> Voltar conectado</span></div>}{connector.id === "instagram" && instagram?.connection && <div className="connected-account-stats"><span><strong>{instagram.connection.followersCount.toLocaleString("pt-BR")}</strong> seguidores</span><span><strong>{instagram.connection.mediaCount.toLocaleString("pt-BR")}</strong> posts</span><span><strong>{instagram.connection.reach30d.toLocaleString("pt-BR")}</strong> alcance 30d</span></div>}</div>
         {connector.id === "instagram" ? <div className="connection-actions">{instagram?.connection ? <><button type="button" className="primary-button" onClick={syncInstagram} disabled={syncing}><RefreshCw className={syncing ? "spin" : ""} size={16} />{syncing ? "Sincronizando..." : "Sincronizar métricas"}</button><button type="button" className="text-button danger" onClick={disconnectInstagram}>Desconectar</button></> : <button type="button" className="primary-button" onClick={connectInstagram}>{instagram?.connectionMode === "access_token" ? "Ativar conta recebida" : instagram?.configured ? "Conectar Instagram" : "Ver configuração necessária"}<ArrowRight size={16} /></button>}</div> : <button type="button" className={connector.id === "substack" ? "secondary-button" : "primary-button"} onClick={() => setSetupOpen(true)}>{connector.id === "substack" ? "Ativar fluxo manual" : "Iniciar configuração"}<ArrowRight size={16} /></button>}
       </section>
       {error && <p className="form-error">{error}</p>}
